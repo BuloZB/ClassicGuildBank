@@ -23,7 +23,7 @@
     "@angular/router": "^8.1.1",
     "@clr/angular": "^2.0.2",
     "@clr/icons": "2.0.2",
-    "@clr/ui": "2.0.2",
+    "@clr/ui": "2.4.11",
     "@webcomponents/custom-elements": "^1.2.4",
     "core-js": "^3.1.4",
     "rxjs": "^6.5.2",
