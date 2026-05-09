@@ -2,24 +2,38 @@ terraform {
   required_providers {
     azurerm = {
       source  = "hashicorp/azurerm"
-      version = "3.0.2"
+      version = "4.71.0"
     }
 
     aws = {
       source  = "hashicorp/aws"
-      version = "~> 3.0"
+      version = "~> 6.0"
+    }
+
+    cloudflare = {
+      source  = "cloudflare/cloudflare"
+      version = "5.19.0"
     }
   }
 
   backend "azurerm" {
-    storage_account_name = "kmxterraformbackend"
+    use_azuread_auth     = true
+    storage_account_name = "fbiterraformbackend"
     container_name       = "terraform"
     key                  = "terraform.tfstate"
+    resource_group_name  = "rg-fbi-terraform"
   }
 }
 
+provider "cloudflare" {
+}
+
 provider "azurerm" {
-  features {}
+  features {
+    resource_group {
+      prevent_deletion_if_contains_resources = false
+    }     
+  }
 }
 
 provider "aws" {
@@ -31,11 +45,12 @@ locals {
   resource_group_location = var.resource_group_location
   sql_admin_password      = var.sql_admin_password
   dns_name                = "classicguildbank.thielking.dev"
+  sqlcmd_base             = "sqlcmd -S ${azurerm_mssql_server.db_server.fully_qualified_domain_name} -d ${azurerm_mssql_database.db.name} -U terraformadmin -P '${var.sql_admin_password}'"
   # IP Addresses allowed to access Sql Server
   allowed_ips = [
     {
-      start = "23.28.20.0"
-      end   = "23.28.20.255"
+      start = "96.27.255.0"
+      end   = "96.27.255.255"
     }
   ]
 }
@@ -52,15 +67,17 @@ resource "azurerm_resource_group" "rg" {
 
 # Create SQL Server
 resource "azurerm_mssql_server" "db_server" {
-  name                         = lower("${azurerm_resource_group.rg.name}-sql")
-  resource_group_name          = azurerm_resource_group.rg.name
-  location                     = azurerm_resource_group.rg.location
-  version                      = "12.0"
-  administrator_login          = "terraformadmin"
-  administrator_login_password = local.sql_admin_password
+  name                          = lower("${azurerm_resource_group.rg.name}-sql")
+  resource_group_name           = azurerm_resource_group.rg.name
+  location                      = azurerm_resource_group.rg.location
+  version                       = "12.0"
+  administrator_login           = "terraformadmin"
+  administrator_login_password  = local.sql_admin_password
+  public_network_access_enabled = true
+
   azuread_administrator {
     login_username = "athielking@gmail.com"
-    object_id      = "3a4f0f5d-65fa-48cf-a1cc-9e62d351b76a"
+    object_id      = "0084b44c-4311-46a1-973c-9f40b8e65ad1"
   }
 }
 
@@ -70,6 +87,7 @@ resource "azurerm_mssql_firewall_rule" "db_allow_azure" {
   server_id        = azurerm_mssql_server.db_server.id
   start_ip_address = "0.0.0.0"
   end_ip_address   = "0.0.0.0"
+  depends_on = [ azurerm_mssql_server.db_server ]
 }
 
 # Create a firewall rule to allow local access to sql
@@ -79,6 +97,7 @@ resource "azurerm_mssql_firewall_rule" "allow_ip_block" {
   server_id        = azurerm_mssql_server.db_server.id
   start_ip_address = local.allowed_ips[count.index].start
   end_ip_address   = local.allowed_ips[count.index].end
+  depends_on = [ azurerm_mssql_server.db_server ]
 }
 
 # Create the SQL Database
@@ -86,6 +105,7 @@ resource "azurerm_mssql_database" "db" {
   name      = "${azurerm_resource_group.rg.name}-db"
   server_id = azurerm_mssql_server.db_server.id
   sku_name  = "Basic"
+  depends_on = [ azurerm_mssql_server.db_server ]
 }
 
 # Create the Azure App Service Plan
@@ -126,7 +146,7 @@ resource "azurerm_windows_web_app" "app_svc" {
 
     application_stack {
       current_stack  = "dotnet"
-      dotnet_version = "v6.0"
+      dotnet_version = "v10.0"
     }
   }
 }
@@ -156,6 +176,8 @@ resource "aws_s3_bucket_public_access_block" "b" {
   block_public_policy = false
   block_public_acls   = true
   ignore_public_acls  = true
+
+  depends_on = [ aws_s3_bucket.b ]
 }
 
 data "aws_iam_policy_document" "policy" {
@@ -177,6 +199,8 @@ data "aws_iam_policy_document" "policy" {
 resource "aws_s3_bucket_policy" "bucket_policy" {
   bucket = aws_s3_bucket_website_configuration.bucket.id
   policy = data.aws_iam_policy_document.policy.json
+
+  depends_on = [ aws_s3_bucket.b, aws_s3_bucket_public_access_block.b ]
 }
 
 data "aws_acm_certificate" "cert" {
@@ -185,7 +209,6 @@ data "aws_acm_certificate" "cert" {
 }
 
 resource "aws_cloudfront_distribution" "s3_distribution" {
-  aliases = [local.dns_name]
 
   origin {
     domain_name = aws_s3_bucket.b.bucket_regional_domain_name
@@ -210,6 +233,8 @@ resource "aws_cloudfront_distribution" "s3_distribution" {
     }
   }
 
+  aliases = [ local.dns_name ]
+
   viewer_certificate {
     acm_certificate_arn = data.aws_acm_certificate.cert.arn
     ssl_support_method  = "sni-only"
@@ -233,17 +258,18 @@ resource "aws_cloudfront_distribution" "s3_distribution" {
 # ------------------------------------------------------------------------------
 
 # Import existing DNS Zone as Data.  This is not managed by this terraform deployment
-data "azurerm_dns_zone" "dns" {
-  name                = "thielking.dev"
-  resource_group_name = "TerraformPrereqs"
+data "cloudflare_zone" "dns_zone" {
+  zone_id = "d7e91e43d2066585660e2ae39248896d"
 }
 
 # Create a DNS record to point to our CDN Enpoint
-resource "azurerm_dns_cname_record" "cname" {
-  name                = lower(azurerm_resource_group.rg.name)
-  zone_name           = data.azurerm_dns_zone.dns.name
-  resource_group_name = data.azurerm_dns_zone.dns.resource_group_name
-  ttl                 = 3600
-  record              = aws_cloudfront_distribution.s3_distribution.domain_name
+resource "cloudflare_dns_record" "example_dns_record" {
+  zone_id = data.cloudflare_zone.dns_zone.id
+  name = "classicguildbank"
+  ttl = 1
+  type = "CNAME"
+  comment = "Classic Guild Bank"
+  content = aws_cloudfront_distribution.s3_distribution.domain_name
+  proxied = true
 }
 

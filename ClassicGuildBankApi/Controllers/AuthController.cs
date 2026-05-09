@@ -6,13 +6,13 @@ using ClassicGuildBankData.Models;
 using ClassicGuildBankData.Repositories;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Http;
-using Microsoft.AspNetCore.Http.Internal;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using Microsoft.IdentityModel.Tokens;
 using Microsoft.Net.Http.Headers;
+using Newtonsoft.Json;
 using System;
 using System.Collections.Generic;
 using System.IdentityModel.Tokens.Jwt;
@@ -96,7 +96,7 @@ namespace ClassicGuildBankApi.Controllers
             }
             catch (Exception ex)
             {
-                _logger.LogError($"Exception thrown while logging in: {ex}");
+                _logger.LogError($"Exception thrown while logging in: {ex}");                
             }
 
             return BadRequest(new { errorMessage = "Failed to login" } );
